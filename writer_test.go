@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pierrec/lz4/v4"
-	"github.com/pierrec/lz4/v4/internal/lz4block"
+	"github.com/pierrec/lz4"
+	"github.com/pierrec/lz4/internal/lz4block"
 )
 
 func TestWriter(t *testing.T) {
@@ -287,7 +287,7 @@ func TestWriterConcurrency(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	copyBuf := make([]byte, 16 << 20) // Use a 16 MiB buffer.
+	copyBuf := make([]byte, 16<<20) // Use a 16 MiB buffer.
 	if _, err := io.CopyBuffer(tw, src, copyBuf); err != nil {
 		t.Fatal(err)
 	}
