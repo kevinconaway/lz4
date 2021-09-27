@@ -4,12 +4,11 @@ package lz4stream
 import (
 	"encoding/binary"
 	"fmt"
-	"io"
-	"io/ioutil"
-
 	"github.com/pierrec/lz4/v4/internal/lz4block"
 	"github.com/pierrec/lz4/v4/internal/lz4errors"
-	"github.com/pierrec/lz4/v4/internal/xxh32"
+	xxh322 "github.com/pierrec/lz4/v4/internal/xxh32"
+	"io"
+	"io/ioutil"
 )
 
 //go:generate go run gen.go
@@ -30,7 +29,7 @@ type Frame struct {
 	Descriptor FrameDescriptor
 	Blocks     Blocks
 	Checksum   uint32
-	checksum   xxh32.XXHZero
+	checksum   xxh322.XXHZero
 }
 
 // Reset allows reusing the Frame.
@@ -200,5 +199,5 @@ func (fd *FrameDescriptor) initR(f *Frame, src io.Reader) error {
 }
 
 func descriptorChecksum(buf []byte) byte {
-	return byte(xxh32.ChecksumZero(buf) >> 8)
+	return byte(xxh322.ChecksumZero(buf) >> 8)
 }

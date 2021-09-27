@@ -2,11 +2,10 @@ package xxh32_test
 
 import (
 	"encoding/binary"
+	xxh322 "github.com/pierrec/lz4/v4/internal/xxh32"
 	"hash/crc32"
 	"hash/fnv"
 	"testing"
-
-	"github.com/pierrec/lz4/v4/internal/xxh32"
 )
 
 type test struct {
@@ -32,14 +31,14 @@ var testdata = []test{
 }
 
 func TestZeroBlockSize(t *testing.T) {
-	var xxh xxh32.XXHZero
+	var xxh xxh322.XXHZero
 	if s := xxh.BlockSize(); s <= 0 {
 		t.Errorf("invalid BlockSizeIndex: %d", s)
 	}
 }
 
 func TestZeroSize(t *testing.T) {
-	var xxh xxh32.XXHZero
+	var xxh xxh322.XXHZero
 	if s := xxh.Size(); s != 4 {
 		t.Errorf("invalid Size: got %d expected 4", s)
 	}
@@ -47,14 +46,14 @@ func TestZeroSize(t *testing.T) {
 
 func TestZeroData(t *testing.T) {
 	for _, td := range testdata {
-		var xxh xxh32.XXHZero
+		var xxh xxh322.XXHZero
 		data := []byte(td.data)
 		_, _ = xxh.Write(data)
 
 		if got, want := xxh.Sum32(), td.sum; got != want {
 			t.Fatalf("got %x; want %x", got, want)
 		}
-		if got, want := xxh32.ChecksumZero(data), td.sum; got != want {
+		if got, want := xxh322.ChecksumZero(data), td.sum; got != want {
 			t.Errorf("got %x; want %x", got, want)
 		}
 	}
@@ -62,7 +61,7 @@ func TestZeroData(t *testing.T) {
 
 func TestZeroSplitData(t *testing.T) {
 	for _, td := range testdata {
-		var xxh xxh32.XXHZero
+		var xxh xxh322.XXHZero
 		data := []byte(td.data)
 		l := len(data) / 2
 		_, _ = xxh.Write(data[0:l])
@@ -76,7 +75,7 @@ func TestZeroSplitData(t *testing.T) {
 
 func TestZeroSum(t *testing.T) {
 	for _, td := range testdata {
-		var xxh xxh32.XXHZero
+		var xxh xxh322.XXHZero
 		data := []byte(td.data)
 		_, _ = xxh.Write(data)
 		b := xxh.Sum(data)
@@ -90,7 +89,7 @@ func TestZeroSum(t *testing.T) {
 func TestZeroChecksum(t *testing.T) {
 	for _, td := range testdata {
 		data := []byte(td.data)
-		h := xxh32.ChecksumZero(data)
+		h := xxh322.ChecksumZero(data)
 		if got, want := h, td.sum; got != want {
 			t.Errorf("got %x; want %x", got, want)
 		}
@@ -98,7 +97,7 @@ func TestZeroChecksum(t *testing.T) {
 }
 
 func TestZeroReset(t *testing.T) {
-	var xxh xxh32.XXHZero
+	var xxh xxh322.XXHZero
 	for _, td := range testdata {
 		_, _ = xxh.Write([]byte(td.data))
 		h := xxh.Sum32()
@@ -110,16 +109,16 @@ func TestZeroReset(t *testing.T) {
 }
 
 func TestNil(t *testing.T) {
-	want := xxh32.ChecksumZero([]byte(""))
+	want := xxh322.ChecksumZero([]byte(""))
 
-	var xxh xxh32.XXHZero
+	var xxh xxh322.XXHZero
 	xxh.Write(nil)
 	got := xxh.Sum32()
 	if got != want {
 		t.Errorf("got %x; want %x", got, want)
 	}
 
-	got = xxh32.ChecksumZero(nil)
+	got = xxh322.ChecksumZero(nil)
 	if got != want {
 		t.Errorf("got %x; want %x", got, want)
 	}
@@ -127,19 +126,19 @@ func TestNil(t *testing.T) {
 
 func TestUnaligned(t *testing.T) {
 	zeros := make([]byte, 100)
-	ha := xxh32.ChecksumZero(zeros[:len(zeros)-1])
-	hu := xxh32.ChecksumZero(zeros[1:])
+	ha := xxh322.ChecksumZero(zeros[:len(zeros)-1])
+	hu := xxh322.ChecksumZero(zeros[1:])
 	if ha != hu {
 		t.Errorf("mismatch: %x != %x", ha, hu)
 	}
 
-	var xxh xxh32.XXHZero
+	var xxh xxh322.XXHZero
 	xxh.Write(zeros[:len(zeros)-1])
 	ha = xxh.Sum32()
 
 	xxh.Reset()
 	xxh.Write(zeros[1:])
-	hu = xxh32.ChecksumZero(zeros[1:])
+	hu = xxh322.ChecksumZero(zeros[1:])
 
 	if ha != hu {
 		t.Errorf("mismatch: %x != %x", ha, hu)
@@ -152,7 +151,7 @@ func TestUnaligned(t *testing.T) {
 var testdata1 = []byte(testdata[len(testdata)-1].data)
 
 func Benchmark_XXH32(b *testing.B) {
-	var h xxh32.XXHZero
+	var h xxh322.XXHZero
 	for n := 0; n < b.N; n++ {
 		_, _ = h.Write(testdata1)
 		h.Sum32()
@@ -162,13 +161,13 @@ func Benchmark_XXH32(b *testing.B) {
 
 func Benchmark_XXH32_Checksum(b *testing.B) {
 	for n := 0; n < b.N; n++ {
-		xxh32.ChecksumZero(testdata1)
+		xxh322.ChecksumZero(testdata1)
 	}
 }
 
 // The following two benchmark the case where 3/4 calls are not 4-byte-aligned.
 func Benchmark_XXH32Unaligned(b *testing.B) {
-	var h xxh32.XXHZero
+	var h xxh322.XXHZero
 	for n := 0; n < b.N; n++ {
 		_, _ = h.Write(testdata1[n%4:])
 		h.Sum32()
@@ -178,7 +177,7 @@ func Benchmark_XXH32Unaligned(b *testing.B) {
 
 func Benchmark_XXH32_ChecksumUnaligned(b *testing.B) {
 	for n := 0; n < b.N; n++ {
-		xxh32.ChecksumZero(testdata1[n%4:])
+		xxh322.ChecksumZero(testdata1[n%4:])
 	}
 }
 

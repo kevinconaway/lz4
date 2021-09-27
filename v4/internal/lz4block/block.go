@@ -2,10 +2,9 @@ package lz4block
 
 import (
 	"encoding/binary"
+	"github.com/pierrec/lz4/v4/internal/lz4errors"
 	"math/bits"
 	"sync"
-
-	"github.com/pierrec/lz4/v4/internal/lz4errors"
 )
 
 const (

@@ -1,11 +1,10 @@
-package lz4
+package v4
 
 import (
-	"io"
-
 	"github.com/pierrec/lz4/v4/internal/lz4block"
 	"github.com/pierrec/lz4/v4/internal/lz4errors"
-	"github.com/pierrec/lz4/v4/internal/lz4stream"
+	lz4stream2 "github.com/pierrec/lz4/v4/internal/lz4stream"
+	"io"
 )
 
 var writerStates = []aState{
@@ -18,7 +17,7 @@ var writerStates = []aState{
 
 // NewWriter returns a new LZ4 frame encoder.
 func NewWriter(w io.Writer) *Writer {
-	zw := &Writer{frame: lz4stream.NewFrame()}
+	zw := &Writer{frame: lz4stream2.NewFrame()}
 	zw.state.init(writerStates)
 	_ = zw.Apply(DefaultBlockSizeOption, DefaultChecksumOption, DefaultConcurrency, defaultOnBlockDone)
 	zw.Reset(w)
@@ -31,7 +30,7 @@ type Writer struct {
 	src     io.Writer                 // destination writer
 	level   lz4block.CompressionLevel // how hard to try
 	num     int                       // concurrency level
-	frame   *lz4stream.Frame          // frame being built
+	frame   *lz4stream2.Frame         // frame being built
 	data    []byte                    // pending data
 	idx     int                       // size of pending data
 	handler func(int)
@@ -129,10 +128,10 @@ func (w *Writer) write(data []byte, safe bool) error {
 		w.handler(len(block.Data))
 		return err
 	}
-	c := make(chan *lz4stream.FrameDataBlock)
+	c := make(chan *lz4stream2.FrameDataBlock)
 	w.frame.Blocks.Blocks <- c
-	go func(c chan *lz4stream.FrameDataBlock, data []byte, safe bool) {
-		b := lz4stream.NewFrameDataBlock(w.frame)
+	go func(c chan *lz4stream2.FrameDataBlock, data []byte, safe bool) {
+		b := lz4stream2.NewFrameDataBlock(w.frame)
 		c <- b.Compress(w.frame, data, w.level)
 		<-c
 		w.handler(len(b.Data))

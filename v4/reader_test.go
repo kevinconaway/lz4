@@ -1,9 +1,10 @@
-package lz4_test
+package v4_test
 
 import (
 	"bytes"
 	"errors"
 	"fmt"
+	lz4 "github.com/pierrec/lz4/v4"
 	"io"
 	"io/ioutil"
 	"os"
@@ -11,8 +12,6 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-
-	"github.com/pierrec/lz4/v4"
 )
 
 func _o(s ...lz4.Option) []lz4.Option {

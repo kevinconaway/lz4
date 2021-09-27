@@ -1,13 +1,12 @@
-package lz4_test
+package v4_test
 
 import (
 	"bytes"
+	lz4 "github.com/pierrec/lz4/v4"
+	"github.com/pierrec/lz4/v4/internal/lz4block"
 	"io"
 	"io/ioutil"
 	"testing"
-
-	"github.com/pierrec/lz4/v4"
-	"github.com/pierrec/lz4/v4/internal/lz4block"
 )
 
 func BenchmarkCompress(b *testing.B) {

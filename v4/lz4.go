@@ -6,26 +6,26 @@
 // http://fastcompression.blogspot.fr/2011/05/lz4-explained.html.
 //
 // See https://github.com/lz4/lz4 for the reference C implementation.
-package lz4
+package v4
 
 import (
-	"github.com/pierrec/lz4/v4/internal/lz4block"
+	lz4block2 "github.com/pierrec/lz4/v4/internal/lz4block"
 	"github.com/pierrec/lz4/v4/internal/lz4errors"
 )
 
 func _() {
 	// Safety checks for duplicated elements.
 	var x [1]struct{}
-	_ = x[lz4block.CompressionLevel(Fast)-lz4block.Fast]
-	_ = x[Block64Kb-BlockSize(lz4block.Block64Kb)]
-	_ = x[Block256Kb-BlockSize(lz4block.Block256Kb)]
-	_ = x[Block1Mb-BlockSize(lz4block.Block1Mb)]
-	_ = x[Block4Mb-BlockSize(lz4block.Block4Mb)]
+	_ = x[lz4block2.CompressionLevel(Fast)-lz4block2.Fast]
+	_ = x[Block64Kb-BlockSize(lz4block2.Block64Kb)]
+	_ = x[Block256Kb-BlockSize(lz4block2.Block256Kb)]
+	_ = x[Block1Mb-BlockSize(lz4block2.Block1Mb)]
+	_ = x[Block4Mb-BlockSize(lz4block2.Block4Mb)]
 }
 
 // CompressBlockBound returns the maximum size of a given buffer of size n, when not compressible.
 func CompressBlockBound(n int) int {
-	return lz4block.CompressBlockBound(n)
+	return lz4block2.CompressBlockBound(n)
 }
 
 // UncompressBlock uncompresses the source buffer into the destination one,
@@ -35,7 +35,7 @@ func CompressBlockBound(n int) int {
 //
 // An error is returned if the source data is invalid or the destination buffer is too small.
 func UncompressBlock(src, dst []byte) (int, error) {
-	return lz4block.UncompressBlock(src, dst, nil)
+	return lz4block2.UncompressBlock(src, dst, nil)
 }
 
 // UncompressBlockWithDict uncompresses the source buffer into the destination one using a
@@ -45,7 +45,7 @@ func UncompressBlock(src, dst []byte) (int, error) {
 //
 // An error is returned if the source data is invalid or the destination buffer is too small.
 func UncompressBlockWithDict(src, dst, dict []byte) (int, error) {
-	return lz4block.UncompressBlock(src, dst, dict)
+	return lz4block2.UncompressBlock(src, dst, dict)
 }
 
 // A Compressor compresses data into the LZ4 block format.
@@ -54,7 +54,7 @@ func UncompressBlockWithDict(src, dst, dict []byte) (int, error) {
 // A Compressor is not safe for concurrent use by multiple goroutines.
 //
 // Use a Writer to compress into the LZ4 stream format.
-type Compressor struct{ c lz4block.Compressor }
+type Compressor struct{ c lz4block2.Compressor }
 
 // CompressBlock compresses the source buffer src into the destination dst.
 //
@@ -90,7 +90,7 @@ func (c *Compressor) CompressBlock(src, dst []byte) (int, error) {
 //
 // This function is deprecated. Use a Compressor instead.
 func CompressBlock(src, dst []byte, _ []int) (int, error) {
-	return lz4block.CompressBlock(src, dst)
+	return lz4block2.CompressBlock(src, dst)
 }
 
 // A CompressorHC compresses data into the LZ4 block format.
@@ -104,7 +104,7 @@ type CompressorHC struct {
 	// Level is the maximum search depth for compression.
 	// Values <= 0 mean no maximum.
 	Level CompressionLevel
-	c     lz4block.CompressorHC
+	c     lz4block2.CompressorHC
 }
 
 // CompressBlock compresses the source buffer src into the destination dst.
@@ -119,7 +119,7 @@ type CompressorHC struct {
 // return value (0, nil) means the data is likely incompressible and a buffer
 // of length CompressBlockBound(len(src)) should be passed in.
 func (c *CompressorHC) CompressBlock(src, dst []byte) (int, error) {
-	return c.c.CompressBlock(src, dst, lz4block.CompressionLevel(c.Level))
+	return c.c.CompressBlock(src, dst, lz4block2.CompressionLevel(c.Level))
 }
 
 // CompressBlockHC is equivalent to CompressorHC.CompressBlock.
@@ -127,7 +127,7 @@ func (c *CompressorHC) CompressBlock(src, dst []byte) (int, error) {
 //
 // This function is deprecated. Use a CompressorHC instead.
 func CompressBlockHC(src, dst []byte, depth CompressionLevel, _, _ []int) (int, error) {
-	return lz4block.CompressBlockHC(src, dst, lz4block.CompressionLevel(depth))
+	return lz4block2.CompressBlockHC(src, dst, lz4block2.CompressionLevel(depth))
 }
 
 const (

@@ -3,10 +3,9 @@ package lz4stream
 import (
 	"bytes"
 	"fmt"
+	"github.com/pierrec/lz4/v4/internal/lz4block"
 	"strings"
 	"testing"
-
-	"github.com/pierrec/lz4/v4/internal/lz4block"
 )
 
 func TestFrameDescriptor(t *testing.T) {

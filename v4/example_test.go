@@ -1,12 +1,11 @@
-package lz4_test
+package v4_test
 
 import (
 	"fmt"
+	lz4 "github.com/pierrec/lz4/v4"
 	"io"
 	"os"
 	"strings"
-
-	"github.com/pierrec/lz4/v4"
 )
 
 func Example() {

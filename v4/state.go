@@ -1,11 +1,10 @@
-package lz4
+package v4
 
 import (
 	"errors"
 	"fmt"
-	"io"
-
 	"github.com/pierrec/lz4/v4/internal/lz4errors"
+	"io"
 )
 
 //go:generate go run golang.org/x/tools/cmd/stringer -type=aState -output state_gen.go

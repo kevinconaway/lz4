@@ -1,11 +1,10 @@
-package lz4
+package v4
 
 import (
-	"io"
-
 	"github.com/pierrec/lz4/v4/internal/lz4block"
 	"github.com/pierrec/lz4/v4/internal/lz4errors"
 	"github.com/pierrec/lz4/v4/internal/lz4stream"
+	"io"
 )
 
 var readerStates = []aState{

@@ -3,12 +3,11 @@ package lz4stream
 import (
 	"encoding/binary"
 	"fmt"
-	"io"
-	"sync"
-
-	"github.com/pierrec/lz4/v4/internal/lz4block"
+	lz4block2 "github.com/pierrec/lz4/v4/internal/lz4block"
 	"github.com/pierrec/lz4/v4/internal/lz4errors"
 	"github.com/pierrec/lz4/v4/internal/xxh32"
+	"io"
+	"sync"
 )
 
 type Blocks struct {
@@ -199,8 +198,8 @@ func NewFrameDataBlock(f *Frame) *FrameDataBlock {
 }
 
 type FrameDataBlock struct {
-	Size     DataBlockSize
-	Data     []byte // compressed or uncompressed data (.data or .src)
+	Size DataBlockSize
+	Data []byte // compressed or uncompressed data (.data or .src)
 	Checksum uint32
 	data     []byte // buffer for compressed data
 	src      []byte // uncompressed data
@@ -213,7 +212,7 @@ func (b *FrameDataBlock) Close(f *Frame) {
 	b.err = nil
 	if b.data != nil {
 		// Block was not already closed.
-		lz4block.Put(b.data)
+		lz4block2.Put(b.data)
 		b.Data = nil
 		b.data = nil
 		b.src = nil
@@ -221,7 +220,7 @@ func (b *FrameDataBlock) Close(f *Frame) {
 }
 
 // Block compression errors are ignored since the buffer is sized appropriately.
-func (b *FrameDataBlock) Compress(f *Frame, src []byte, level lz4block.CompressionLevel) *FrameDataBlock {
+func (b *FrameDataBlock) Compress(f *Frame, src []byte, level lz4block2.CompressionLevel) *FrameDataBlock {
 	data := b.data
 	if f.isLegacy() {
 		data = data[:cap(data)]
@@ -230,10 +229,10 @@ func (b *FrameDataBlock) Compress(f *Frame, src []byte, level lz4block.Compressi
 	}
 	var n int
 	switch level {
-	case lz4block.Fast:
-		n, _ = lz4block.CompressBlock(src, data)
+	case lz4block2.Fast:
+		n, _ = lz4block2.CompressBlock(src, data)
 	default:
-		n, _ = lz4block.CompressBlockHC(src, data, level)
+		n, _ = lz4block2.CompressBlockHC(src, data, level)
 	}
 	if n == 0 {
 		b.Size.UncompressedSet(true)
@@ -321,7 +320,7 @@ func (b *FrameDataBlock) Uncompress(f *Frame, dst, dict []byte, sum bool) ([]byt
 		n := copy(dst, b.data)
 		dst = dst[:n]
 	} else {
-		n, err := lz4block.UncompressBlock(b.data, dst, dict)
+		n, err := lz4block2.UncompressBlock(b.data, dst, dict)
 		if err != nil {
 			return nil, err
 		}

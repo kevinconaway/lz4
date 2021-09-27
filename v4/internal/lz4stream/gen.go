@@ -5,11 +5,11 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"github.com/pierrec/lz4/v4/internal/lz4block"
 	"io"
 	"log"
 	"os"
 
-	"github.com/pierrec/lz4/v4/internal/lz4block"
 	"github.com/pierrec/packer"
 	"golang.org/x/tools/imports"
 )
