@@ -1,7 +1,7 @@
 //go:build go1.9
 // +build go1.9
 
-package lz4block_test
+package lz4_test
 
 import (
 	"bytes"
@@ -10,8 +10,12 @@ import (
 	"testing"
 
 	"github.com/pierrec/lz4"
-	"github.com/pierrec/lz4/internal/lz4block"
-	"github.com/pierrec/lz4/internal/lz4errors"
+)
+
+const (
+	// Should match values in lz4.go
+	hashLog = 16
+	htSize  = 1 << hashLog
 )
 
 type testcase struct {
@@ -22,14 +26,14 @@ type testcase struct {
 
 var rawFiles = []testcase{
 	// {"testdata/207326ba-36f8-11e7-954a-aca46ba8ca73.png", true, nil},
-	{"../../testdata/e.txt", false, nil},
-	{"../../testdata/gettysburg.txt", true, nil},
-	{"../../testdata/Mark.Twain-Tom.Sawyer.txt", true, nil},
-	{"../../testdata/pg1661.txt", true, nil},
-	{"../../testdata/pi.txt", false, nil},
-	{"../../testdata/random.data", false, nil},
-	{"../../testdata/repeat.txt", true, nil},
-	{"../../testdata/pg1661.txt", true, nil},
+	{"testdata/e.txt", false, nil},
+	{"testdata/gettysburg.txt", true, nil},
+	{"testdata/Mark.Twain-Tom.Sawyer.txt", true, nil},
+	{"testdata/pg1661.txt", true, nil},
+	{"testdata/pi.txt", false, nil},
+	{"testdata/random.data", false, nil},
+	{"testdata/repeat.txt", true, nil},
+	{"testdata/pg1661.txt", true, nil},
 }
 
 func TestCompressUncompressBlock(t *testing.T) {
@@ -40,7 +44,7 @@ func TestCompressUncompressBlock(t *testing.T) {
 		src := tc.src
 
 		// Compress the data.
-		zbuf := make([]byte, lz4block.CompressBlockBound(len(src)))
+		zbuf := make([]byte, lz4.CompressBlockBound(len(src)))
 		n, err := compress(src, zbuf)
 		if err != nil {
 			t.Error(err)
@@ -60,7 +64,7 @@ func TestCompressUncompressBlock(t *testing.T) {
 
 		// Uncompress the data.
 		buf := make([]byte, len(src))
-		n, err = lz4block.UncompressBlock(zbuf, buf, nil)
+		n, err = lz4.UncompressBlock(zbuf, buf)
 		if err != nil {
 			t.Fatal(err)
 		} else if n < 0 || n > len(buf) {
@@ -99,13 +103,16 @@ func TestCompressUncompressBlock(t *testing.T) {
 		t.Run("", func(t *testing.T) {
 			tc := tc
 			t.Run(tc.file, func(t *testing.T) {
+				// t.Parallel()
 				n = run(t, tc, func(src, dst []byte) (int, error) {
-					return lz4block.CompressBlock(src, dst)
+					var ht [htSize]int
+					return lz4.CompressBlock(src, dst, ht[:])
 				})
 			})
 			t.Run(fmt.Sprintf("%s HC", tc.file), func(t *testing.T) {
+				// t.Parallel()
 				nhc = run(t, tc, func(src, dst []byte) (int, error) {
-					return lz4.CompressBlockHC(src, dst, 10, nil, nil)
+					return lz4.CompressBlockHC(src, dst, -1)
 				})
 			})
 		})
@@ -131,7 +138,7 @@ func TestCompressCornerCase_CopyDstUpperBound(t *testing.T) {
 		}
 	}
 
-	file := "../../testdata/upperbound.data"
+	file := "testdata/upperbound.data"
 	src, err := ioutil.ReadFile(file)
 	if err != nil {
 		t.Fatal(err)
@@ -140,64 +147,31 @@ func TestCompressCornerCase_CopyDstUpperBound(t *testing.T) {
 	t.Run(file, func(t *testing.T) {
 		t.Parallel()
 		run(src, func(src, dst []byte) (int, error) {
-			return lz4block.CompressBlock(src, dst)
+			var ht [htSize]int
+			return lz4.CompressBlock(src, dst, ht[:])
 		})
 	})
 	t.Run(fmt.Sprintf("%s HC", file), func(t *testing.T) {
 		t.Parallel()
 		run(src, func(src, dst []byte) (int, error) {
-			return lz4block.CompressBlockHC(src, dst, 16)
+			return lz4.CompressBlockHC(src, dst, -1)
 		})
 	})
 }
 
 func TestIssue23(t *testing.T) {
-	compressBuf := make([]byte, lz4block.CompressBlockBound(1<<16))
+	compressBuf := make([]byte, lz4.CompressBlockBound(1<<16))
 	for j := 1; j < 16; j++ {
 		var buf [1 << 16]byte
+		var ht [htSize]int
 
 		for i := 0; i < len(buf); i += j {
 			buf[i] = 1
 		}
 
-		n, _ := lz4block.CompressBlock(buf[:], compressBuf)
+		n, _ := lz4.CompressBlock(buf[:], compressBuf, ht[:])
 		if got, want := n, 300; got > want {
 			t.Fatalf("not able to compress repeated data: got %d; want %d", got, want)
 		}
-	}
-}
-
-func TestIssue116(t *testing.T) {
-	src, err := ioutil.ReadFile("../../fuzz/corpus/pg1661.txt")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	dst := make([]byte, len(src)-len(src)>>1)
-	lz4block.CompressBlock(src, dst)
-
-	var c lz4block.Compressor
-	_, err = c.CompressBlock(src, dst)
-	if err != lz4errors.ErrInvalidSourceShortBuffer {
-		t.Fatalf("expected %v, got nil", lz4errors.ErrInvalidSourceShortBuffer)
-	}
-}
-
-func TestWriteLiteralLen(t *testing.T) {
-	for _, c := range []struct {
-		dstlen int
-		src    string
-	}{
-		// These used to panic when writing literal lengths.
-		{41, "00000\b000\xa4000\xe6000\v00" +
-			"0\xb7000\xb8000#000\x820\x00\x00\x00\x00\x00" +
-			"\x00\x00\x00\x0000\xff0000\x00000,000e" +
-			"000000000000000000000"},
-		{62, "00000r000o000a000s000e000tion, 00000e000" +
-			"a0d0000t000p000tition, 0o000i000e0c0000o" +
-			"0 00000000000000000000000000000000000000000"},
-	} {
-		dst := make([]byte, c.dstlen)
-		lz4block.CompressBlock([]byte(c.src), dst)
 	}
 }

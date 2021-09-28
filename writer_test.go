@@ -1,18 +1,16 @@
 package lz4_test
 
 import (
-	"archive/tar"
+	"bufio"
 	"bytes"
 	"fmt"
 	"io"
 	"io/ioutil"
 	"os"
 	"reflect"
-	"strings"
 	"testing"
 
 	"github.com/pierrec/lz4"
-	"github.com/pierrec/lz4/internal/lz4block"
 )
 
 func TestWriter(t *testing.T) {
@@ -25,96 +23,63 @@ func TestWriter(t *testing.T) {
 		"testdata/pi.txt",
 		"testdata/random.data",
 		"testdata/repeat.txt",
-		"testdata/issue102.data",
 	}
 
 	for _, fname := range goldenFiles {
-		for _, option := range []lz4.Option{
-			lz4.ConcurrencyOption(1),
-			lz4.BlockChecksumOption(true),
-			lz4.SizeOption(123),
-			lz4.ConcurrencyOption(4),
-		} {
-			label := fmt.Sprintf("%s/%s", fname, option)
-			t.Run(label, func(t *testing.T) {
-				fname := fname
-				t.Parallel()
+		for _, size := range []int{0, 4} {
+			for _, header := range []lz4.Header{
+				{}, // Default header.
+				{BlockChecksum: true},
+				{NoChecksum: true},
+				{BlockMaxSize: 64 << 10}, // 64Kb
+				{CompressionLevel: 10},
+				{Size: 123},
+			} {
+				label := fmt.Sprintf("%s/%s", fname, header)
+				t.Run(label, func(t *testing.T) {
+					fname := fname
+					header := header
+					t.Parallel()
 
-				raw, err := ioutil.ReadFile(fname)
-				if err != nil {
-					t.Fatal(err)
-				}
-				r := bytes.NewReader(raw)
+					raw, err := ioutil.ReadFile(fname)
+					if err != nil {
+						t.Fatal(err)
+					}
+					r := bytes.NewReader(raw)
 
-				// Compress.
-				zout := new(bytes.Buffer)
-				zw := lz4.NewWriter(zout)
-				if err := zw.Apply(option, lz4.CompressionLevelOption(lz4.Level1)); err != nil {
-					t.Fatal(err)
-				}
-				_, err = io.Copy(zw, r)
-				if err != nil {
-					t.Fatal(err)
-				}
-				err = zw.Close()
-				if err != nil {
-					t.Fatal(err)
-				}
+					// Compress.
+					var zout bytes.Buffer
+					zw := lz4.NewWriter(&zout)
+					zw.Header = header
+					zw.WithConcurrency(size)
+					_, err = io.Copy(zw, r)
+					if err != nil {
+						t.Fatal(err)
+					}
+					err = zw.Close()
+					if err != nil {
+						t.Fatal(err)
+					}
 
-				// Uncompress.
-				out := new(bytes.Buffer)
-				zr := lz4.NewReader(zout)
-				n, err := io.Copy(out, zr)
-				if err != nil {
-					t.Fatal(err)
-				}
+					// Uncompress.
+					var out bytes.Buffer
+					zr := lz4.NewReader(&zout)
+					n, err := io.Copy(&out, zr)
+					if err != nil {
+						t.Fatal(err)
+					}
 
-				// The uncompressed data must be the same as the initial input.
-				if got, want := int(n), len(raw); got != want {
-					t.Errorf("invalid sizes: got %d; want %d", got, want)
-				}
-
-				if got, want := out.Bytes(), raw; !reflect.DeepEqual(got, want) {
-					t.Fatal("uncompressed data does not match original")
-				}
-
-				if strings.Contains(option.String(), "SizeOption") {
-					if got, want := zr.Size(), 123; got != want {
+					// The uncompressed data must be the same as the initial input.
+					if got, want := int(n), len(raw); got != want {
 						t.Errorf("invalid sizes: got %d; want %d", got, want)
 					}
-				}
-			})
+
+					if got, want := out.Bytes(), raw; !reflect.DeepEqual(got, want) {
+						t.Fatal("uncompressed data does not match original")
+					}
+				})
+			}
 		}
-	}
-}
-
-func TestWriter_Reset(t *testing.T) {
-	data := pg1661
-	buf := new(bytes.Buffer)
-	src := bytes.NewReader(data)
-	zw := lz4.NewWriter(buf)
-
-	// Partial write.
-	_, _ = io.CopyN(zw, src, int64(len(data))/2)
-
-	buf.Reset()
-	src.Reset(data)
-	zw.Reset(buf)
-	zw.Reset(buf)
-	// Another time to maybe trigger some edge case.
-	if _, err := io.Copy(zw, src); err != nil {
-		t.Fatal(err)
-	}
-	if err := zw.Close(); err != nil {
-		t.Fatal(err)
-	}
-	// Cannot compare compressed outputs directly, so compare the uncompressed output.
-	out := new(bytes.Buffer)
-	if _, err := io.Copy(out, lz4.NewReader(buf)); err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(out.Bytes(), data) {
-		t.Fatal("result does not match original")
 	}
 }
 
@@ -126,6 +91,7 @@ func TestIssue41(t *testing.T) {
 	data := "x"
 	go func() {
 		_, _ = fmt.Fprint(zw, data)
+		_ = zw.Flush()
 		_ = zw.Close()
 		_ = w.Close()
 	}()
@@ -143,7 +109,7 @@ func TestIssue43(t *testing.T) {
 
 		f, err := os.Open("testdata/issue43.data")
 		if err != nil {
-			panic(err)
+			t.Fatal(err)
 		}
 		defer f.Close()
 
@@ -152,7 +118,7 @@ func TestIssue43(t *testing.T) {
 
 		_, err = io.Copy(zw, f)
 		if err != nil {
-			panic(err)
+			t.Fatal(err)
 		}
 	}()
 	_, err := io.Copy(ioutil.Discard, lz4.NewReader(r))
@@ -168,15 +134,16 @@ func TestIssue51(t *testing.T) {
 	}
 
 	zbuf := make([]byte, 8192)
+	ht := make([]int, htSize)
 
-	n, err := lz4block.CompressBlock(data, zbuf)
+	n, err := lz4.CompressBlock(data, zbuf, ht)
 	if err != nil {
 		t.Fatal(err)
 	}
 	zbuf = zbuf[:n]
 
 	buf := make([]byte, 8192)
-	n, err = lz4block.UncompressBlock(zbuf, buf, nil)
+	n, err = lz4.UncompressBlock(zbuf, buf)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,11 +160,11 @@ func TestIssue71(t *testing.T) {
 	} {
 		t.Run(tc, func(t *testing.T) {
 			src := []byte(tc)
-			bound := lz4block.CompressBlockBound(len(tc))
+			bound := lz4.CompressBlockBound(len(tc))
 
 			// Small buffer.
 			zSmall := make([]byte, bound-1)
-			n, err := lz4block.CompressBlock(src, zSmall)
+			n, err := lz4.CompressBlock(src, zSmall, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -207,7 +174,7 @@ func TestIssue71(t *testing.T) {
 
 			// Large enough buffer.
 			zLarge := make([]byte, bound)
-			n, err = lz4block.CompressBlock(src, zLarge)
+			n, err = lz4.CompressBlock(src, zLarge, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -218,88 +185,59 @@ func TestIssue71(t *testing.T) {
 	}
 }
 
-func TestWriterLegacy(t *testing.T) {
+func TestIssue125(t *testing.T) {
 	goldenFiles := []string{
+		"testdata/e.txt",
+		"testdata/gettysburg.txt",
+		"testdata/Mark.Twain-Tom.Sawyer.txt",
+		"testdata/Mark.Twain-Tom.Sawyer_long.txt",
+		"testdata/pg1661.txt",
+		"testdata/pi.txt",
+		"testdata/random.data",
+		"testdata/repeat.txt",
 		"testdata/vmlinux_LZ4_19377",
-		"testdata/bzImage_lz4_isolated",
 	}
 
 	for _, fname := range goldenFiles {
-		t.Run(fname, func(t *testing.T) {
-			fname := fname
-			t.Parallel()
+		for _, concurrency := range []int{0, 4, -1} {
+			label := fmt.Sprintf("%s(%d)", fname, concurrency)
+			t.Run(label, func(t *testing.T) {
+				t.Parallel()
 
-			src, err := ioutil.ReadFile(fname)
-			if err != nil {
-				t.Fatal(err)
-			}
+				// this issue doesn't happen when read the entire file into a []byte
+				// and then use bytes.NewReader() since it actually does a copy on its
+				// own for each call to Read(), so we use *os.File directly with Copy()
+				f, err := os.Open(fname)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer f.Close()
 
-			out := new(bytes.Buffer)
-			zw := lz4.NewWriter(out)
-			if err := zw.Apply(lz4.LegacyOption(true), lz4.CompressionLevelOption(lz4.Fast)); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := io.Copy(zw, bytes.NewReader(src)); err != nil {
-				t.Fatal(err)
-			}
-			if err := zw.Close(); err != nil {
-				t.Fatal(err)
-			}
+				var out bytes.Buffer
+				writer := lz4.NewWriter(&out).WithConcurrency(concurrency)
+				writer.Header = lz4.Header{
+					// we use a small enough block size so it is easier to trigger the issue
+					// as most examples files are small
+					BlockMaxSize: 1024 * 64,
+				}
 
-			out2 := new(bytes.Buffer)
-			zr := lz4.NewReader(out)
-			if _, err := io.Copy(out2, zr); err != nil {
-				t.Fatal(err)
-			}
-			if !bytes.Equal(out2.Bytes(), src) {
-				t.Fatal("uncompressed compressed output different from source")
-			}
-		})
-	}
-}
+				_, err = io.Copy(writer, f)
+				if err != nil {
+					t.Fatal(err)
+				}
+				writer.Close()
 
-func TestWriterConcurrency(t *testing.T) {
-	const someGiantFile = "testdata/vmlinux_LZ4_19377"
+				reader := lz4.NewReader(&out)
 
-	out := new(bytes.Buffer)
-	zw := lz4.NewWriter(out)
-	if err := zw.Apply(
-		lz4.ConcurrencyOption(4),
-		lz4.BlockSizeOption(lz4.Block4Mb),
-		lz4.ChecksumOption(true)); err != nil {
-		t.Fatal(err)
-	}
+				var d bytes.Buffer
+				decompressed := bufio.NewWriter(&d)
 
-	// Test writing a tar file.
-	tw := tar.NewWriter(zw)
-	stat, err := os.Stat(someGiantFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	header, err := tar.FileInfoHeader(stat, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := tw.WriteHeader(header); err != nil {
-		t.Fatal(err)
-	}
-	src, err := os.Open(someGiantFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	copyBuf := make([]byte, 16<<20) // Use a 16 MiB buffer.
-	if _, err := io.CopyBuffer(tw, src, copyBuf); err != nil {
-		t.Fatal(err)
-	}
-	if err := tw.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := zw.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	zr := lz4.NewReader(out)
-	if _, err := io.Copy(ioutil.Discard, zr); err != nil {
-		t.Fatal(err)
+				_, err = io.Copy(decompressed, reader)
+				if err != nil {
+					t.Fail()
+					t.Log(err)
+				}
+			})
+		}
 	}
 }

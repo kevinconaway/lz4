@@ -7,52 +7,39 @@ import (
 	"testing"
 
 	"github.com/pierrec/lz4"
-	"github.com/pierrec/lz4/internal/lz4block"
 )
 
 func BenchmarkCompress(b *testing.B) {
 	buf := make([]byte, len(pg1661))
-	var c lz4.Compressor
-
-	n, _ := c.CompressBlock(pg1661, buf)
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	b.ReportMetric(float64(n), "outbytes")
 
 	for i := 0; i < b.N; i++ {
-		_, _ = c.CompressBlock(pg1661, buf)
+		_, _ = lz4.CompressBlock(pg1661, buf, nil)
 	}
 }
 
 func BenchmarkCompressRandom(b *testing.B) {
 	buf := make([]byte, len(randomLZ4))
-	var c lz4.Compressor
-
-	n, _ := c.CompressBlock(pg1661, buf)
 
 	b.ReportAllocs()
 	b.SetBytes(int64(len(random)))
 	b.ResetTimer()
-	b.ReportMetric(float64(n), "outbytes")
 
 	for i := 0; i < b.N; i++ {
-		_, _ = c.CompressBlock(random, buf)
+		_, _ = lz4.CompressBlock(random, buf, nil)
 	}
 }
 
 func BenchmarkCompressHC(b *testing.B) {
 	buf := make([]byte, len(pg1661))
-	c := lz4.CompressorHC{Level: 16}
-
-	n, _ := c.CompressBlock(pg1661, buf)
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	b.ReportMetric(float64(n), "outbytes")
 
 	for i := 0; i < b.N; i++ {
-		_, _ = c.CompressBlock(pg1661, buf)
+		_, _ = lz4.CompressBlockHC(pg1661, buf, 16)
 	}
 }
 
@@ -63,7 +50,7 @@ func BenchmarkUncompress(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		_, _ = lz4block.UncompressBlock(pg1661LZ4, buf, nil)
+		_, _ = lz4.UncompressBlock(pg1661LZ4, buf)
 	}
 }
 
@@ -90,13 +77,13 @@ func benchmarkUncompress(b *testing.B, compressed []byte) {
 	r := bytes.NewReader(compressed)
 	zr := lz4.NewReader(r)
 
-	// Decompress once to determine the uncompressed size of testfile.
-	_, err := io.Copy(ioutil.Discard, zr)
+	// Determine the uncompressed size of testfile.
+	uncompressedSize, err := io.Copy(ioutil.Discard, zr)
 	if err != nil {
 		b.Fatal(err)
 	}
 
-	b.SetBytes(int64(len(compressed)))
+	b.SetBytes(uncompressedSize)
 	b.ReportAllocs()
 	b.ResetTimer()
 
@@ -112,13 +99,40 @@ func BenchmarkUncompressDigits(b *testing.B) { benchmarkUncompress(b, digitsLZ4)
 func BenchmarkUncompressTwain(b *testing.B)  { benchmarkUncompress(b, twainLZ4) }
 func BenchmarkUncompressRand(b *testing.B)   { benchmarkUncompress(b, randomLZ4) }
 
+func benchmarkSkipBytes(b *testing.B, compressed []byte) {
+	r := bytes.NewReader(compressed)
+	zr := lz4.NewReader(r)
+
+	// Determine the uncompressed size of testfile.
+	uncompressedSize, err := io.Copy(ioutil.Discard, zr)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	b.SetBytes(uncompressedSize)
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		r.Reset(compressed)
+		zr.Reset(r)
+		zr.Seek(uncompressedSize, io.SeekCurrent)
+		_, _ = io.Copy(ioutil.Discard, zr)
+	}
+}
+
+func BenchmarkSkipBytesPg1661(b *testing.B) { benchmarkSkipBytes(b, pg1661LZ4) }
+func BenchmarkSkipBytesDigits(b *testing.B) { benchmarkSkipBytes(b, digitsLZ4) }
+func BenchmarkSkipBytesTwain(b *testing.B)  { benchmarkSkipBytes(b, twainLZ4) }
+func BenchmarkSkipBytesRand(b *testing.B)   { benchmarkSkipBytes(b, randomLZ4) }
+
 func benchmarkCompress(b *testing.B, uncompressed []byte) {
 	w := bytes.NewBuffer(nil)
 	zw := lz4.NewWriter(w)
 	r := bytes.NewReader(uncompressed)
 
-	// Compress once to determine the compressed size of testfile.
-	_, err := io.Copy(zw, r)
+	// Determine the compressed size of testfile.
+	compressedSize, err := io.Copy(zw, r)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -126,10 +140,9 @@ func benchmarkCompress(b *testing.B, uncompressed []byte) {
 		b.Fatal(err)
 	}
 
-	b.SetBytes(int64(len(uncompressed)))
+	b.SetBytes(compressedSize)
 	b.ReportAllocs()
 	b.ResetTimer()
-	b.ReportMetric(float64(w.Len()), "outbytes")
 
 	for i := 0; i < b.N; i++ {
 		r.Reset(uncompressed)

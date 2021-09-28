@@ -1,263 +1,335 @@
 package lz4
 
 import (
+	"encoding/binary"
+	"fmt"
 	"io"
+	"io/ioutil"
 
-	"github.com/pierrec/lz4/internal/lz4block"
-	"github.com/pierrec/lz4/internal/lz4errors"
-	"github.com/pierrec/lz4/internal/lz4stream"
+	"github.com/pierrec/lz4/internal/xxh32"
 )
 
-var readerStates = []aState{
-	noState:     newState,
-	errorState:  newState,
-	newState:    readState,
-	readState:   closedState,
-	closedState: newState,
+// Reader implements the LZ4 frame decoder.
+// The Header is set after the first call to Read().
+// The Header may change between Read() calls in case of concatenated frames.
+type Reader struct {
+	Header
+	// Handler called when a block has been successfully read.
+	// It provides the number of bytes read.
+	OnBlockDone func(size int)
+
+	buf      [8]byte       // Scrap buffer.
+	pos      int64         // Current position in src.
+	src      io.Reader     // Source.
+	zdata    []byte        // Compressed data.
+	data     []byte        // Uncompressed data.
+	idx      int           // Index of unread bytes into data.
+	checksum xxh32.XXHZero // Frame hash.
+	skip     int64         // Bytes to skip before next read.
+	dpos     int64         // Position in dest
 }
 
 // NewReader returns a new LZ4 frame decoder.
-func NewReader(r io.Reader) *Reader {
-	return newReader(r, false)
+// No access to the underlying io.Reader is performed.
+func NewReader(src io.Reader) *Reader {
+	r := &Reader{src: src}
+	return r
 }
 
-func newReader(r io.Reader, legacy bool) *Reader {
-	zr := &Reader{frame: lz4stream.NewFrame()}
-	zr.state.init(readerStates)
-	_ = zr.Apply(DefaultConcurrency, defaultOnBlockDone)
-	zr.Reset(r)
-	return zr
-}
+// readHeader checks the frame magic number and parses the frame descriptoz.
+// Skippable frames are supported even as a first frame although the LZ4
+// specifications recommends skippable frames not to be used as first frames.
+func (z *Reader) readHeader(first bool) error {
+	defer z.checksum.Reset()
 
-// Reader allows reading an LZ4 stream.
-type Reader struct {
-	state   _State
-	src     io.Reader        // source reader
-	num     int              // concurrency level
-	frame   *lz4stream.Frame // frame being read
-	data    []byte           // block buffer allocated in non concurrent mode
-	reads   chan []byte      // pending data
-	idx     int              // size of pending data
-	handler func(int)
-	cum     uint32
-	dict    []byte
-}
-
-func (*Reader) private() {}
-
-func (r *Reader) Apply(options ...Option) (err error) {
-	defer r.state.check(&err)
-	switch r.state.state {
-	case newState:
-	case errorState:
-		return r.state.err
-	default:
-		return lz4errors.ErrOptionClosedOrError
-	}
-	for _, o := range options {
-		if err = o(r); err != nil {
-			return
+	buf := z.buf[:]
+	for {
+		magic, err := z.readUint32()
+		if err != nil {
+			z.pos += 4
+			if !first && err == io.ErrUnexpectedEOF {
+				return io.EOF
+			}
+			return err
 		}
-	}
-	return
-}
-
-// Size returns the size of the underlying uncompressed data, if set in the stream.
-func (r *Reader) Size() int {
-	switch r.state.state {
-	case readState, closedState:
-		if r.frame.Descriptor.Flags.Size() {
-			return int(r.frame.Descriptor.ContentSize)
+		if magic == frameMagic {
+			break
 		}
+		if magic>>8 != frameSkipMagic>>8 {
+			return ErrInvalid
+		}
+		skipSize, err := z.readUint32()
+		if err != nil {
+			return err
+		}
+		z.pos += 4
+		m, err := io.CopyN(ioutil.Discard, z.src, int64(skipSize))
+		if err != nil {
+			return err
+		}
+		z.pos += m
 	}
-	return 0
-}
 
-func (r *Reader) isNotConcurrent() bool {
-	return r.num == 1
-}
-
-func (r *Reader) init() error {
-	err := r.frame.ParseHeaders(r.src)
-	if err != nil {
+	// Header.
+	if _, err := io.ReadFull(z.src, buf[:2]); err != nil {
 		return err
 	}
-	if !r.frame.Descriptor.Flags.BlockIndependence() {
-		// We can't decompress dependent blocks concurrently.
-		// Instead of throwing an error to the user, silently drop concurrency
-		r.num = 1
+	z.pos += 8
+
+	b := buf[0]
+	if v := b >> 6; v != Version {
+		return fmt.Errorf("lz4: invalid version: got %d; expected %d", v, Version)
 	}
-	data, err := r.frame.InitR(r.src, r.num)
-	if err != nil {
+	if b>>5&1 == 0 {
+		return ErrBlockDependency
+	}
+	z.BlockChecksum = b>>4&1 > 0
+	frameSize := b>>3&1 > 0
+	z.NoChecksum = b>>2&1 == 0
+
+	bmsID := buf[1] >> 4 & 0x7
+	if bmsID < 4 || bmsID > 7 {
+		return fmt.Errorf("lz4: invalid block max size ID: %d", bmsID)
+	}
+	bSize := blockSizeIndexToValue(bmsID - 4)
+	z.BlockMaxSize = bSize
+
+	// Allocate the compressed/uncompressed buffers.
+	// The compressed buffer cannot exceed the uncompressed one.
+	if n := 2 * bSize; cap(z.zdata) < n {
+		z.zdata = make([]byte, n, n)
+	}
+	if debugFlag {
+		debug("header block max size id=%d size=%d", bmsID, bSize)
+	}
+	z.zdata = z.zdata[:bSize]
+	z.data = z.zdata[:cap(z.zdata)][bSize:]
+	z.idx = len(z.data)
+
+	_, _ = z.checksum.Write(buf[0:2])
+
+	if frameSize {
+		buf := buf[:8]
+		if _, err := io.ReadFull(z.src, buf); err != nil {
+			return err
+		}
+		z.Size = binary.LittleEndian.Uint64(buf)
+		z.pos += 8
+		_, _ = z.checksum.Write(buf)
+	}
+
+	// Header checksum.
+	if _, err := io.ReadFull(z.src, buf[:1]); err != nil {
 		return err
 	}
-	r.reads = data
-	r.idx = 0
-	size := r.frame.Descriptor.Flags.BlockSizeIndex()
-	r.data = size.Get()
-	r.cum = 0
+	z.pos++
+	if h := byte(z.checksum.Sum32() >> 8 & 0xFF); h != buf[0] {
+		return fmt.Errorf("lz4: invalid header checksum: got %x; expected %x", buf[0], h)
+	}
+
+	z.Header.done = true
+	if debugFlag {
+		debug("header read: %v", z.Header)
+	}
+
 	return nil
 }
 
-func (r *Reader) Read(buf []byte) (n int, err error) {
-	defer r.state.check(&err)
-	switch r.state.state {
-	case readState:
-	case closedState, errorState:
-		return 0, r.state.err
-	case newState:
-		// First initialization.
-		if err = r.init(); r.state.next(err) {
-			return
-		}
-	default:
-		return 0, r.state.fail()
-	}
-	for len(buf) > 0 {
-		var bn int
-		if r.idx == 0 {
-			if r.isNotConcurrent() {
-				bn, err = r.read(buf)
-			} else {
-				lz4block.Put(r.data)
-				r.data = <-r.reads
-				if len(r.data) == 0 {
-					// No uncompressed data: something went wrong or we are done.
-					err = r.frame.Blocks.ErrorR()
-				}
-			}
-			switch err {
-			case nil:
-			case io.EOF:
-				if er := r.frame.CloseR(r.src); er != nil {
-					err = er
-				}
-				lz4block.Put(r.data)
-				r.data = nil
-				return
-			default:
-				return
-			}
-		}
-		if bn == 0 {
-			// Fill buf with buffered data.
-			bn = copy(buf, r.data[r.idx:])
-			r.idx += bn
-			if r.idx == len(r.data) {
-				// All data read, get ready for the next Read.
-				r.idx = 0
-			}
-		}
-		buf = buf[bn:]
-		n += bn
-		r.handler(bn)
-	}
-	return
-}
-
-// read uncompresses the next block as follow:
-// - if buf has enough room, the block is uncompressed into it directly
-//   and the lenght of used space is returned
-// - else, the uncompress data is stored in r.data and 0 is returned
-func (r *Reader) read(buf []byte) (int, error) {
-	block := r.frame.Blocks.Block
-	_, err := block.Read(r.frame, r.src, r.cum)
-	if err != nil {
-		return 0, err
-	}
-	var direct bool
-	dst := r.data[:cap(r.data)]
-	if len(buf) >= len(dst) {
-		// Uncompress directly into buf.
-		direct = true
-		dst = buf
-	}
-	dst, err = block.Uncompress(r.frame, dst, r.dict, true)
-	if err != nil {
-		return 0, err
-	}
-	if !r.frame.Descriptor.Flags.BlockIndependence() {
-		if len(r.dict)+len(dst) > 128*1024 {
-			preserveSize := 64*1024 - len(dst)
-			if preserveSize < 0 {
-				preserveSize = 0
-			}
-			r.dict = r.dict[len(r.dict)-preserveSize:]
-		}
-		r.dict = append(r.dict, dst...)
-	}
-	r.cum += uint32(len(dst))
-	if direct {
-		return len(dst), nil
-	}
-	r.data = dst
-	return 0, nil
-}
-
-// Reset clears the state of the Reader r such that it is equivalent to its
-// initial state from NewReader, but instead writing to writer.
-// No access to reader is performed.
+// Read decompresses data from the underlying source into the supplied buffer.
 //
-// w.Close must be called before Reset.
-func (r *Reader) Reset(reader io.Reader) {
-	if r.data != nil {
-		lz4block.Put(r.data)
-		r.data = nil
+// Since there can be multiple streams concatenated, Header values may
+// change between calls to Read(). If that is the case, no data is actually read from
+// the underlying io.Reader, to allow for potential input buffer resizing.
+func (z *Reader) Read(buf []byte) (int, error) {
+	if debugFlag {
+		debug("Read buf len=%d", len(buf))
 	}
-	r.frame.Reset(r.num)
-	r.state.reset()
-	r.src = reader
-	r.reads = nil
-}
-
-// WriteTo efficiently uncompresses the data from the Reader underlying source to w.
-func (r *Reader) WriteTo(w io.Writer) (n int64, err error) {
-	switch r.state.state {
-	case closedState, errorState:
-		return 0, r.state.err
-	case newState:
-		if err = r.init(); r.state.next(err) {
-			return
+	if !z.Header.done {
+		if err := z.readHeader(true); err != nil {
+			return 0, err
 		}
-	default:
-		return 0, r.state.fail()
+		if debugFlag {
+			debug("header read OK compressed buffer %d / %d uncompressed buffer %d : %d index=%d",
+				len(z.zdata), cap(z.zdata), len(z.data), cap(z.data), z.idx)
+		}
 	}
-	defer r.state.nextd(&err)
 
-	var data []byte
-	if r.isNotConcurrent() {
-		size := r.frame.Descriptor.Flags.BlockSizeIndex()
-		data = size.Get()
-		defer lz4block.Put(data)
+	if len(buf) == 0 {
+		return 0, nil
 	}
-	for {
-		var bn int
-		var dst []byte
-		if r.isNotConcurrent() {
-			bn, err = r.read(data)
-			dst = data[:bn]
+
+	if z.idx == len(z.data) {
+		// No data ready for reading, process the next block.
+		if debugFlag {
+			debug("reading block from writer")
+		}
+		// Reset uncompressed buffer
+		z.data = z.zdata[:cap(z.zdata)][len(z.zdata):]
+
+		// Block length: 0 = end of frame, highest bit set: uncompressed.
+		bLen, err := z.readUint32()
+		if err != nil {
+			return 0, err
+		}
+		z.pos += 4
+
+		if bLen == 0 {
+			// End of frame reached.
+			if !z.NoChecksum {
+				// Validate the frame checksum.
+				checksum, err := z.readUint32()
+				if err != nil {
+					return 0, err
+				}
+				if debugFlag {
+					debug("frame checksum got=%x / want=%x", z.checksum.Sum32(), checksum)
+				}
+				z.pos += 4
+				if h := z.checksum.Sum32(); checksum != h {
+					return 0, fmt.Errorf("lz4: invalid frame checksum: got %x; expected %x", h, checksum)
+				}
+			}
+
+			// Get ready for the next concatenated frame and keep the position.
+			pos := z.pos
+			z.Reset(z.src)
+			z.pos = pos
+
+			// Since multiple frames can be concatenated, check for more.
+			return 0, z.readHeader(false)
+		}
+
+		if debugFlag {
+			debug("raw block size %d", bLen)
+		}
+		if bLen&compressedBlockFlag > 0 {
+			// Uncompressed block.
+			bLen &= compressedBlockMask
+			if debugFlag {
+				debug("uncompressed block size %d", bLen)
+			}
+			if int(bLen) > cap(z.data) {
+				return 0, fmt.Errorf("lz4: invalid block size: %d", bLen)
+			}
+			z.data = z.data[:bLen]
+			if _, err := io.ReadFull(z.src, z.data); err != nil {
+				return 0, err
+			}
+			z.pos += int64(bLen)
+			if z.OnBlockDone != nil {
+				z.OnBlockDone(int(bLen))
+			}
+
+			if z.BlockChecksum {
+				checksum, err := z.readUint32()
+				if err != nil {
+					return 0, err
+				}
+				z.pos += 4
+
+				if h := xxh32.ChecksumZero(z.data); h != checksum {
+					return 0, fmt.Errorf("lz4: invalid block checksum: got %x; expected %x", h, checksum)
+				}
+			}
+
 		} else {
-			lz4block.Put(dst)
-			dst = <-r.reads
-			bn = len(dst)
-			if bn == 0 {
-				// No uncompressed data: something went wrong or we are done.
-				err = r.frame.Blocks.ErrorR()
+			// Compressed block.
+			if debugFlag {
+				debug("compressed block size %d", bLen)
+			}
+			if int(bLen) > cap(z.data) {
+				return 0, fmt.Errorf("lz4: invalid block size: %d", bLen)
+			}
+			zdata := z.zdata[:bLen]
+			if _, err := io.ReadFull(z.src, zdata); err != nil {
+				return 0, err
+			}
+			z.pos += int64(bLen)
+
+			if z.BlockChecksum {
+				checksum, err := z.readUint32()
+				if err != nil {
+					return 0, err
+				}
+				z.pos += 4
+
+				if h := xxh32.ChecksumZero(zdata); h != checksum {
+					return 0, fmt.Errorf("lz4: invalid block checksum: got %x; expected %x", h, checksum)
+				}
+			}
+
+			n, err := UncompressBlock(zdata, z.data)
+			if err != nil {
+				return 0, err
+			}
+			z.data = z.data[:n]
+			if z.OnBlockDone != nil {
+				z.OnBlockDone(n)
 			}
 		}
-		switch err {
-		case nil:
-		case io.EOF:
-			err = r.frame.CloseR(r.src)
-			return
-		default:
-			return
+
+		if !z.NoChecksum {
+			_, _ = z.checksum.Write(z.data)
+			if debugFlag {
+				debug("current frame checksum %x", z.checksum.Sum32())
+			}
 		}
-		r.handler(bn)
-		bn, err = w.Write(dst)
-		n += int64(bn)
-		if err != nil {
-			return
-		}
+		z.idx = 0
 	}
+
+	if z.skip > int64(len(z.data[z.idx:])) {
+		z.skip -= int64(len(z.data[z.idx:]))
+		z.dpos += int64(len(z.data[z.idx:]))
+		z.idx = len(z.data)
+		return 0, nil
+	}
+
+	z.idx += int(z.skip)
+	z.dpos += z.skip
+	z.skip = 0
+
+	n := copy(buf, z.data[z.idx:])
+	z.idx += n
+	z.dpos += int64(n)
+	if debugFlag {
+		debug("copied %d bytes to input", n)
+	}
+
+	return n, nil
+}
+
+// Seek implements io.Seeker, but supports seeking forward from the current
+// position only. Any other seek will return an error. Allows skipping output
+// bytes which aren't needed, which in some scenarios is faster than reading
+// and discarding them.
+// Note this may cause future calls to Read() to read 0 bytes if all of the
+// data they would have returned is skipped.
+func (z *Reader) Seek(offset int64, whence int) (int64, error) {
+	if offset < 0 || whence != io.SeekCurrent {
+		return z.dpos + z.skip, ErrUnsupportedSeek
+	}
+	z.skip += offset
+	return z.dpos + z.skip, nil
+}
+
+// Reset discards the Reader's state and makes it equivalent to the
+// result of its original state from NewReader, but reading from r instead.
+// This permits reusing a Reader rather than allocating a new one.
+func (z *Reader) Reset(r io.Reader) {
+	z.Header = Header{}
+	z.pos = 0
+	z.src = r
+	z.zdata = z.zdata[:0]
+	z.data = z.data[:0]
+	z.idx = 0
+	z.checksum.Reset()
+}
+
+// readUint32 reads an uint32 into the supplied buffer.
+// The idea is to make use of the already allocated buffers avoiding additional allocations.
+func (z *Reader) readUint32() (uint32, error) {
+	buf := z.buf[:4]
+	_, err := io.ReadFull(z.src, buf)
+	x := binary.LittleEndian.Uint32(buf)
+	return x, err
 }

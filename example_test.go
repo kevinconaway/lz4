@@ -36,9 +36,9 @@ func ExampleCompressBlock() {
 	s := "hello world"
 	data := []byte(strings.Repeat(s, 100))
 	buf := make([]byte, len(data))
+	ht := make([]int, 64<<10) // buffer for the compression table
 
-	var c lz4.Compressor
-	n, err := c.CompressBlock(data, buf)
+	n, err := lz4.CompressBlock(data, buf, ht)
 	if err != nil {
 		fmt.Println(err)
 	}
@@ -47,7 +47,7 @@ func ExampleCompressBlock() {
 	}
 	buf = buf[:n] // compressed data
 
-	// Allocate a very large buffer for decompression.
+	// Allocated a very large buffer for decompression.
 	out := make([]byte, 10*len(data))
 	n, err = lz4.UncompressBlock(buf, out)
 	if err != nil {
